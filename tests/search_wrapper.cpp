@@ -63,7 +63,7 @@ int main(int argc, char **argv)
     // Read query ranges from CSV file (format: "low-high" per line)
     std::vector<std::pair<int, int>> query_ranges = read_two_ints_per_line(paths["query_ranges"]);
     
-    // Read groundtruth from ivecs file
+    // Read groundtruth from ivecs file (contains IDs in ORIGINAL unsorted order)
     std::vector<std::vector<int>> groundtruth = read_ivecs(paths["groundtruth"]);
     
     if (query_ranges.size() != storage.query_nb) {
@@ -72,6 +72,20 @@ int main(int argc, char **argv)
     if (groundtruth.size() != storage.query_nb) {
         throw Exception("Number of groundtruth entries does not match number of queries");
     }
+
+    // Load the ID mapping: sorted_index -> original_index
+    // This translates from sorted database IDs (used by iRangeGraph) to original IDs (used in groundtruth)
+    std::string mapping_file = paths["data_vector"] + ".mapping";
+    std::ifstream mapping_in(mapping_file, std::ios::binary);
+    if (!mapping_in) {
+        throw Exception("Unable to open mapping file: " + mapping_file);
+    }
+    int num_points;
+    mapping_in.read(reinterpret_cast<char*>(&num_points), sizeof(int));
+    std::vector<size_t> sorted_to_original(num_points);
+    mapping_in.read(reinterpret_cast<char*>(sorted_to_original.data()), num_points * sizeof(size_t));
+    mapping_in.close();
+    std::cout << "Loaded ID mapping from " << mapping_file << " (" << num_points << " points)" << std::endl;
 
     // Load the index
     iRangeGraph::iRangeGraph_Search<float> index(paths["data_vector"], paths["index"], &storage, M);
@@ -102,18 +116,20 @@ int main(int argc, char **argv)
         );
 
         // Calculate recall for this query
-        std::set<int> result_set;
+        // Results from iRangeGraph are in sorted database space - need to convert to original space
+        std::set<int> result_set_original;
         while (!res.empty())
         {
-            result_set.insert(res.top().second);
+            int sorted_id = res.top().second;
+            int original_id = sorted_to_original[sorted_id];  // Translate to original ID
+            result_set_original.insert(original_id);
             res.pop();
         }
 
-        // Count true positives - only compare against first query_K groundtruth results
-        int gt_size = std::min((int)groundtruth[i].size(), query_K);
-        for (int j = 0; j < gt_size; j++)
+        // Count true positives - groundtruth is in original ID space
+        for (int gt_id : groundtruth[i])
         {
-            if (result_set.count(groundtruth[i][j]))
+            if (result_set_original.count(gt_id))
                 total_true_positives++;
         }
         total_queries_processed++;
