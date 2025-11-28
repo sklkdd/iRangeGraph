@@ -94,11 +94,11 @@ int main(int argc, char **argv)
     // Load the index
     iRangeGraph::iRangeGraph_Search<float> index(paths["data_vector"], paths["index"], &storage, M);
 
-    // Start timing
-    auto start_time = std::chrono::high_resolution_clock::now();
+    // Store query results for later recall calculation
+    std::vector<std::vector<int>> query_results(storage.query_nb);
 
-    int total_true_positives = 0;
-    int total_queries_processed = 0;
+    // Start timing - measure only query execution, not recall calculation
+    auto start_time = std::chrono::high_resolution_clock::now();
 
     // Execute queries with single ef_search value
     for (int i = 0; i < storage.query_nb; i++)
@@ -119,24 +119,15 @@ int main(int argc, char **argv)
             M  // edge_limit = M
         );
 
-        // Calculate recall for this query
-        // Results from iRangeGraph are in sorted database space - need to convert to original space
-        std::set<int> result_set_original;
+        // Store results (translate from sorted to original ID space)
+        query_results[i].reserve(query_K);
         while (!res.empty())
         {
             int sorted_id = res.top().second;
             int original_id = sorted_to_original[sorted_id];  // Translate to original ID
-            result_set_original.insert(original_id);
+            query_results[i].push_back(original_id);
             res.pop();
         }
-
-        // Count true positives - groundtruth is in original ID space
-        for (int gt_id : groundtruth[i])
-        {
-            if (result_set_original.count(gt_id))
-                total_true_positives++;
-        }
-        total_queries_processed++;
     }
 
     // Stop timing
@@ -147,9 +138,25 @@ int main(int argc, char **argv)
     done = true;
     monitor.join();
 
-    // Calculate metrics
-    float recall = (float)total_true_positives / (total_queries_processed * query_K);
-    float qps = total_queries_processed / elapsed.count();
+    // Calculate QPS (queries per second)
+    float qps = storage.query_nb / elapsed.count();
+
+    // Calculate recall AFTER timing stops (exclude from performance measurement)
+    int total_true_positives = 0;
+    for (int i = 0; i < storage.query_nb; i++)
+    {
+        // Convert query results to set for faster lookup
+        std::set<int> result_set(query_results[i].begin(), query_results[i].end());
+        
+        // Count true positives - groundtruth is in original ID space
+        for (int gt_id : groundtruth[i])
+        {
+            if (result_set.count(gt_id))
+                total_true_positives++;
+        }
+    }
+
+    float recall = (float)total_true_positives / (storage.query_nb * query_K);
 
     // Print statistics in the expected format
     std::cout << "Query execution completed." << std::endl;
